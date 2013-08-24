@@ -6,19 +6,13 @@ import string
 import time
 import yaml
 
-from oonib import errors as e
+from oonib import errors
 from oonib.handlers import OONIBHandler
 from oonib.policy.handlers import Policy
 
 from datetime import datetime
 from oonib import randomStr, otime, config, log
 from twisted.internet import fdesc, reactor
-
-class MissingField(Exception):
-    pass
-
-class InvalidRequestField(Exception):
-    pass
 
 def parseUpdateReportRequest(request):
     #db_report_id_regexp = re.compile("[a-zA-Z0-9]+$")
@@ -38,7 +32,7 @@ def parseUpdateReportRequest(request):
         raise MissingField('report_id')
 
     if not re.match(report_id_regexp, report_id):
-        raise InvalidRequestField('report_id')
+        raise errors.InvalidRequestField('report_id')
 
     return parsed_request
 
@@ -66,41 +60,35 @@ def parseNewReportRequest(request):
         try:
             value_to_check = parsed_request[k]
         except KeyError:
-            raise MissingField(k)
+            raise errors.MissingRequestField(k)
 
-        print "Matching %s with %s | %s" % (regexp, value_to_check, k)
+        log.debug("Matching %s with %s | %s" % (regexp, value_to_check, k))
         if re.match(regexp, str(value_to_check)):
             continue
         else:
-            raise InvalidRequestField(k)
+            raise errors.InvalidRequestField(k)
     
     try:
         test_helper = parsed_request['test_helper']
         if not re.match(regexp, str(test_helper)):
-            raise InvalidRequestField('test_helper')
+            raise errors.InvalidRequestField('test_helper')
     except KeyError:
         pass
 
     return parsed_request
-
-class InvalidReportHeader(Exception):
-    pass
-
-class MissingReportHeaderKey(InvalidReportHeader):
-    pass
 
 def validate_report_header(report_header):
     required_keys = ['probe_asn', 'probe_cc', 'probe_ip', 'software_name',
             'software_version', 'test_name', 'test_version']
     for key in required_keys:
         if key not in report_header:
-            raise MissingReportHeaderKey(key)
+            raise errors.MissingReportHeaderKey(key)
 
     if report_header['probe_asn'] is None:
         report_header['probe_asn'] = 'AS0'
 
     if not re.match('AS[0-9]+$', report_header['probe_asn']):
-        raise InvalidReportHeader('probe_asn')
+        raise errors.InvalidReportHeader('probe_asn')
 
     # If no country is known, set it to be ZZ (user assigned value in ISO 3166)
     if report_header['probe_cc'] is None:
@@ -125,7 +113,7 @@ def stale_check(report_id):
     if (time.time() - config.reports[report_id]) > config.main.stale_time:
         try:
             close_report(report_id)
-        except ReportNotFound:
+        except errors.ReportNotFound:
             pass
 
 class NewReportHandlerFile(OONIBHandler):
@@ -179,13 +167,7 @@ class NewReportHandlerFile(OONIBHandler):
 
         """
         # XXX here we should validate and sanitize the request
-        try:
-            report_data = parseNewReportRequest(self.request.body)
-        except InvalidRequestField, e:
-            raise e.InvalidRequestField(e)
-        except MissingField, e:
-            raise e.MissingRequestField(e)
-
+        report_data = parseNewReportRequest(self.request.body)
         log.debug("Parsed this data %s" % report_data)
 
         software_name = report_data['software_name']
@@ -200,21 +182,13 @@ class NewReportHandlerFile(OONIBHandler):
             try:
                 self.inputHashes = report_data['input_hashes']
             except KeyError:
-                raise e.InputHashNotProvided
+                raise errors.InputHashNotProvided
             self.checkPolicy()
 
         content = yaml.safe_load(report_data['content'])
         content['backend_version'] = config.backend_version
 
-        try:
-            report_header = validate_report_header(content)
-
-        except MissingReportHeaderKey, key:
-            raise e.MissingReportHeaderKey(key)
-
-        except InvalidReportHeader, key:
-            raise e.InvalidReportHeaderKey(key)
-
+        report_header = validate_report_header(content)
         report_header = yaml.dump(report_header)
         content = "---\n" + report_header + '...\n'
 
@@ -244,7 +218,7 @@ class NewReportHandlerFile(OONIBHandler):
             try:
                 response['test_helper_address'] = config.helpers[requested_helper].address
             except KeyError:
-                raise e.TestHelperNotFound
+                raise errors.TestHelperNotFound
 
         config.reports[report_id] = time.time()
 
@@ -286,11 +260,8 @@ class NewReportHandlerFile(OONIBHandler):
             with open(report_filename, 'a+') as fd:
                 fdesc.setNonBlocking(fd.fileno())
                 fdesc.writeToFD(fd.fileno(), data)
-        except IOError as e:
-            e.OONIBError(404, "Report not found")
-
-class ReportNotFound(Exception):
-    pass
+        except IOError:
+            raise errors.ReportNotFound
 
 def close_report(report_id):
     report_filename = get_report_path(report_id)
@@ -299,7 +270,7 @@ def close_report(report_id):
             yaml_data = ''.join(fd.readline() for _ in range(12))
             report_details = yaml.safe_load(yaml_data)
     except IOError:
-        raise ReportNotFound
+        raise errors.ReportNotFound
 
     timestamp = otime.timestamp(datetime.fromtimestamp(report_details['start_time']))
     dst_filename = '{test_name}-{timestamp}-{probe_asn}-probe.yamloo'.format(
@@ -320,10 +291,7 @@ class CloseReportHandlerFile(OONIBHandler):
         pass
 
     def post(self, report_id):
-        try:
-            close_report(report_id)
-        except ReportNotFound:
-            e.ReportNotFound
+        close_report(report_id)
 
 class PCAPReportHandler(OONIBHandler):
     def get(self):

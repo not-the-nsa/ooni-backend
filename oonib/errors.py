@@ -1,8 +1,11 @@
 from cyclone.web import HTTPError
+from oonib import __version__
 
 class OONIBError(HTTPError):
-    def __init__(self):
-        pass
+    def __init__(self, **kwargs):
+        self.backend_version = __version__
+        self.report_status = kwargs.get("report_status", None)
+        self.test_helper_address = kwargs.get("test_helper_address", None)
 
 class InvalidRequest(OONIBError):
     pass
