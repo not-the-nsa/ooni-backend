@@ -9,6 +9,7 @@ class Bouncer(object):
     def __init__(self):
         self.knownHelpers = {}
         self.updateKnownHelpers()
+        self.updateKnownCollectors()
         
     def updateKnownHelpers(self):
         with open(config.main.bouncer_file) as f:
@@ -22,6 +23,17 @@ class Bouncer(object):
                         'collector-name': collectorName,
                         'helper-address': helperAddress
                     })
+
+    def updateKnownCollectors(self):
+        """
+        Returns the list of all known collectors
+        """
+        self.knownCollectors = []
+        with open(config.main.bouncer_file) as f:
+            bouncerFile = yaml.safe_load(f)
+            for collectorName, helpers in bouncerFile['collector'].items():
+                if collectorName not in self.knownCollectors:
+                    self.knownCollectors.append(collectorName)
 
     def getHelperAddresses(self, helper_name):
         """
@@ -44,46 +56,46 @@ class Bouncer(object):
 
         return helpers_dict
     
-    def filterHelperAddresses(self, requested_helpers):
+    def queryHelper(self, requested_helper=None):
         """
-        Returns a dict of collectors that support all the requested_helpers.
+        Returns a dict with the collector and associated helper that was requested.
+        If no helper was specified, then a random collector shall be returned.
 
         Example:
-        requested_helpers = ['a', 'b', 'c']
-        will return:
-         {
-            'a': '127.0.0.1',
-            'b': 'http://127.0.0.1',
-            'c': '127.0.0.1:590',
-            'collector': 'httpo://thirteenchars1.onion'
-         }
+        Client sends:
+        {
+          'test-helper': 'test_helper_name'
+        }
 
-         or 
+        The bouncer replies:
+        {
+          'test-helper': 'address:port',
+          'collector': 'httpo://collector.onion'
+        }
 
-         {}
+        A client may also send:
+        {
+          'test-collector': 'net test name'
+        }
 
-         if no valid helper was found
-
+        The bouncer replies:
+        {
+          'collector': 'httpo://collector.onion'
+        }
         """
         result = {}
-        for helper_name in requested_helpers:
-            for collector, helper_address in self.getHelperAddresses(helper_name).items():
-                if collector not in result.keys():
-                    result[collector] = {}
-                result[collector][helper_name] = helper_address
+        if not requested_helper:
+            result['collector'] = random.choice(self.knownCollectors)
+            return result
 
-        helper_list = []
-        for collector, helpers in result.items():
-            if len(helpers) == len(requested_helpers):
-                valid_helpers = helpers
-                valid_helpers['collector'] = collector
-                helper_list.append(valid_helpers)
-            else:
-                continue
-        if len(helper_list) == 0:
+        try:
+            for collector, helper_address in random.choice(self.getHelperAddresses(requested_helper)):
+                result['collector'] = collector
+                result['test-helper'] = helper_address
+                return result
+
+        except IndexError:
             return {}
-        else:
-            return random.choice(helper_list)
 
 class BouncerQueryHandler(OONIBHandler):
     def initialize(self):
@@ -108,10 +120,9 @@ class BouncerQueryHandler(OONIBHandler):
         except ValueError:
             raise e.InvalidRequest
 
-        try:
-            requested_helpers = query['test-helpers']
-        except KeyError:
-            raise e.TestHelpersKeyMissing
-
-        response = self.bouncer.filterHelperAddresses(requested_helpers)
-        self.write(response)
+        # either return the requested helper, a random collector, or {}
+        # XXX: presently we don't care about the test-id, so we just
+        # return a random collector from our collection if the client
+        # didn't ask for a specific helper.
+        requested_helper = query.get('test-helper', None)
+        self.write(self.bouncer.queryHelper(requested_helper))
